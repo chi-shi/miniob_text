@@ -33,14 +33,22 @@ RC CharType::cast_to(const Value &val, AttrType type, Value &result) const
   switch (type) {
     case AttrType::DATES: {
       // 将 'YYYY-MM-DD' 字符串转成 YYYYMMDD 整数，并校验闰年、大小月；非法则返回错误
-      const char *s = val.value_.pointer_value_;
-      if (s == nullptr) {
+      const char *raw = val.value_.pointer_value_;
+      if (raw == nullptr) {
         return RC::SCHEMA_FIELD_TYPE_MISMATCH;
       }
+      // 去除首尾空白，与 MySQL 对日期字符串的宽容处理保持一致
+      string s(raw);
+      size_t first = s.find_first_not_of(" \t\r\n");
+      if (first == string::npos) {
+        return RC::SCHEMA_FIELD_TYPE_MISMATCH;
+      }
+      size_t last = s.find_last_not_of(" \t\r\n");
+      s = s.substr(first, last - first + 1);
       int  y = 0, m = 0, d = 0;
       char extra = 0;
       // 末尾加 %c：若日期后面还有多余字符，sscanf 会返回 4，借此把非法格式也拦掉
-      int matched = sscanf(s, "%d-%d-%d%c", &y, &m, &d, &extra);
+      int matched = sscanf(s.c_str(), "%d-%d-%d%c", &y, &m, &d, &extra);
       if (matched != 3) {
         return RC::SCHEMA_FIELD_TYPE_MISMATCH;
       }
