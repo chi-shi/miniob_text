@@ -20,6 +20,8 @@ See the Mulan PSL v2 for more details. */
 #include "common/lang/string.h"
 #include "common/log/log.h"
 
+#include <cstdio>
+
 Value::Value(int val) { set_int(val); }
 
 Value::Value(float val) { set_float(val); }
@@ -120,6 +122,11 @@ void Value::set_data(char *data, int length)
       value_.int_value_ = *(int *)data;
       length_           = length;
     } break;
+    case AttrType::DATES: {
+      // DATE 与 INT 一样按 4 字节整数（YYYYMMDD）存储
+      value_.int_value_ = *(int *)data;
+      length_           = length;
+    } break;
     case AttrType::FLOATS: {
       value_.float_value_ = *(float *)data;
       length_             = length;
@@ -197,6 +204,10 @@ void Value::set_value(const Value &value)
     case AttrType::INTS: {
       set_int(value.get_int());
     } break;
+    case AttrType::DATES: {
+      set_int(value.get_int());
+      set_type(AttrType::DATES);
+    } break;
     case AttrType::FLOATS: {
       set_float(value.get_float());
     } break;
@@ -236,6 +247,13 @@ char *Value::data() const
 
 string Value::to_string() const
 {
+  // DATE 直接在 Value 层把整数 YYYYMMDD 格式化成 YYYY-MM-DD，不经过 DataType，避免取到空指针
+  if (attr_type_ == AttrType::DATES) {
+    int date = value_.int_value_;
+    char buf[16] = {0};
+    snprintf(buf, sizeof(buf), "%04d-%02d-%02d", date / 10000, (date / 100) % 100, date % 100);
+    return string(buf);
+  }
   string res;
   RC     rc = DataType::type_instance(this->attr_type_)->to_string(*this, res);
   if (OB_FAIL(rc)) {
@@ -245,7 +263,21 @@ string Value::to_string() const
   return res;
 }
 
-int Value::compare(const Value &other) const { return DataType::type_instance(this->attr_type_)->compare(*this, other); }
+int Value::compare(const Value &other) const
+{
+  // 只要有一边是 DATE，就按底层整数 YYYYMMDD 比较（cast 后两边通常都是 DATES）
+  if (attr_type_ == AttrType::DATES || other.attr_type() == AttrType::DATES) {
+    int left  = this->get_int();
+    int right = other.get_int();
+    if (left < right) {
+      return -1;
+    } else if (left > right) {
+      return 1;
+    }
+    return 0;
+  }
+  return DataType::type_instance(this->attr_type_)->compare(*this, other);
+}
 
 int Value::get_int() const
 {
@@ -259,6 +291,9 @@ int Value::get_int() const
       }
     }
     case AttrType::INTS: {
+      return value_.int_value_;
+    }
+    case AttrType::DATES: {
       return value_.int_value_;
     }
     case AttrType::FLOATS: {

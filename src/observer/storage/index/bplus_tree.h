@@ -73,7 +73,8 @@ public:
     Value right;
     right.set_type(attr_type_);
     right.set_data(v2, attr_length_);
-    return DataType::type_instance(attr_type_)->compare(left, right);
+    // 走 Value::compare，使 DATE 等在 Value 层处理的类型也能正确比较
+    return left.compare(right);
   }
 
 private:

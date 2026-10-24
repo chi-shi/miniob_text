@@ -13,6 +13,8 @@ See the Mulan PSL v2 for more details. */
 #include "common/type/char_type.h"
 #include "common/value.h"
 
+#include <cstdio>
+
 int CharType::compare(const Value &left, const Value &right) const
 {
   ASSERT(left.attr_type() == AttrType::CHARS && right.attr_type() == AttrType::CHARS, "invalid type");
@@ -29,6 +31,30 @@ RC CharType::set_value_from_str(Value &val, const string &data) const
 RC CharType::cast_to(const Value &val, AttrType type, Value &result) const
 {
   switch (type) {
+    case AttrType::DATES: {
+      // 将 'YYYY-MM-DD' 字符串转成 YYYYMMDD 整数，并校验闰年、大小月；非法则返回错误
+      const char *s = val.value_.pointer_value_;
+      if (s == nullptr) {
+        return RC::SCHEMA_FIELD_TYPE_MISMATCH;
+      }
+      int  y = 0, m = 0, d = 0;
+      char extra = 0;
+      // 末尾加 %c：若日期后面还有多余字符，sscanf 会返回 4，借此把非法格式也拦掉
+      int matched = sscanf(s, "%d-%d-%d%c", &y, &m, &d, &extra);
+      if (matched != 3) {
+        return RC::SCHEMA_FIELD_TYPE_MISMATCH;
+      }
+      static const int month_days[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+      bool leap = (y % 400 == 0) || (y % 4 == 0 && y % 100 != 0);
+      if (y < 1 || y > 9999 || m < 1 || m > 12 || d < 1
+          || d > month_days[m] + (m == 2 && leap ? 1 : 0)) {
+        return RC::SCHEMA_FIELD_TYPE_MISMATCH;
+      }
+      int date_value = y * 10000 + m * 100 + d;
+      result.set_int(date_value);
+      result.set_type(AttrType::DATES);
+      return RC::SUCCESS;
+    }
     default: return RC::UNIMPLEMENTED;
   }
   return RC::SUCCESS;
@@ -38,6 +64,9 @@ int CharType::cast_cost(AttrType type)
 {
   if (type == AttrType::CHARS) {
     return 0;
+  }
+  if (type == AttrType::DATES) {
+    return 1;
   }
   return INT32_MAX;
 }
