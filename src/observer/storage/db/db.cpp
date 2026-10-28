@@ -18,6 +18,7 @@ See the Mulan PSL v2 for more details. */
 #include <sys/stat.h>
 
 #include "common/lang/string.h"
+#include "common/lang/filesystem.h"
 #include "common/log/log.h"
 #include "common/os/path.h"
 #include "common/global_context.h"
@@ -173,6 +174,44 @@ RC Db::create_table(const char *table_name, span<const AttrInfoSqlNode> attribut
 
   opened_tables_[table_name] = table;
   LOG_INFO("Create table success. table name=%s, table_id:%d", table_name, table_id);
+  return RC::SUCCESS;
+}
+
+RC Db::drop_table(const char *table_name)
+{
+  if (table_name == nullptr) {
+    return RC::INVALID_ARGUMENT;
+  }
+
+  auto iter = opened_tables_.find(table_name);
+  if (iter == opened_tables_.end()) {
+    LOG_WARN("failed to drop table, table not exist: %s", table_name);
+    return RC::SCHEMA_TABLE_NOT_EXIST;
+  }
+
+  Table *table = iter->second;
+
+  // 在销毁表对象前，先收集需要删除的索引文件名（索引名记录在表元数据中）
+  vector<string> index_names;
+  const TableMeta &meta = table->table_meta();
+  for (int i = 0; i < meta.index_num(); i++) {
+    index_names.emplace_back(meta.index(i)->name());
+  }
+
+  // 先从内存表映射中移除，再销毁表对象（析构会关闭数据、索引文件句柄）
+  opened_tables_.erase(iter);
+  delete table;
+
+  // 删除磁盘文件：元数据、数据、LOB 以及各索引文件。使用 error_code 版本，文件不存在也不报错
+  std::error_code ec;
+  filesystem::remove(table_meta_file(path_.c_str(), table_name), ec);
+  filesystem::remove(table_data_file(path_.c_str(), table_name), ec);
+  filesystem::remove(table_lob_file(path_.c_str(), table_name), ec);
+  for (const string &index_name : index_names) {
+    filesystem::remove(table_index_file(path_.c_str(), table_name, index_name.c_str()), ec);
+  }
+
+  LOG_INFO("drop table success. table name=%s", table_name);
   return RC::SUCCESS;
 }
 
