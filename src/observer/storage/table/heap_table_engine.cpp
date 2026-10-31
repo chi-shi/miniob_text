@@ -103,6 +103,38 @@ RC HeapTableEngine::delete_record(const Record &record)
   return rc;
 }
 
+RC HeapTableEngine::update_record_with_trx(
+    const Record &old_record, const Record &new_record, Trx *trx)
+{
+  RC rc = RC::SUCCESS;
+
+  // 1. 删除旧索引项
+  rc = delete_entry_of_indexes(old_record.data(), old_record.rid(), false);
+  if (rc != RC::SUCCESS) {
+    LOG_ERROR("failed to delete old index entry. table name=%s, rc=%s", table_meta_->name(), strrc(rc));
+    return rc;
+  }
+
+  // 2. 原地更新数据，保持 RID 不变
+  rc = record_handler_->visit_record(old_record.rid(), [&new_record](Record &record) {
+    memcpy(record.data(), new_record.data(), record.len());
+    return true;
+  });
+  if (rc != RC::SUCCESS) {
+    LOG_ERROR("failed to update record in place. table name=%s, rc=%s", table_meta_->name(), strrc(rc));
+    return rc;
+  }
+
+  // 3. 插入新索引项
+  rc = insert_entry_of_indexes(new_record.data(), old_record.rid());
+  if (rc != RC::SUCCESS) {
+    LOG_ERROR("failed to insert new index entry. table name=%s, rc=%s", table_meta_->name(), strrc(rc));
+    return rc;
+  }
+
+  return rc;
+}
+
 RC HeapTableEngine::get_record_scanner(RecordScanner *&scanner, Trx *trx, ReadWriteMode mode)
 {
   scanner = new HeapRecordScanner(table_, *data_buffer_pool_, trx, db_->log_handler(), mode, nullptr);
