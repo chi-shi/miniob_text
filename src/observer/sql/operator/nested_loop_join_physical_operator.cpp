@@ -60,6 +60,21 @@ RC NestedLoopJoinPhysicalOperator::next()
         return rc;
       }
     }
+
+    if (predicate_ == nullptr) {
+      return rc;
+    }
+
+    Value value;
+    rc = predicate_->get_value(joined_tuple_, value);
+    if (rc != RC::SUCCESS) {
+      LOG_WARN("failed to evaluate join predicate. rc=%s", strrc(rc));
+      return rc;
+    }
+
+    if (value.get_boolean()) {
+      return RC::SUCCESS;
+    }
   }
   return rc;
 }

@@ -38,9 +38,24 @@ See the Mulan PSL v2 for more details. */
 #include "sql/stmt/stmt.h"
 
 #include "sql/expr/expression_iterator.h"
+#include "storage/table/table.h"
+
+#include <cstring>
 
 using namespace std;
 using namespace common;
+
+// 递归收集一个表达式中所有字段所属的表名
+static RC collect_field_tables(Expression &expr, unordered_set<string> &table_names)
+{
+  RC rc = RC::SUCCESS;
+  if (expr.type() == ExprType::FIELD) {
+    table_names.insert(static_cast<FieldExpr &>(expr).table_name());
+    return rc;
+  }
+  return ExpressionIterator::iterate_child_expr(
+      expr, [&](unique_ptr<Expression> &child) { return collect_field_tables(*child, table_names); });
+}
 
 RC LogicalPlanGenerator::create(Stmt *stmt, unique_ptr<LogicalOperator> &logical_operator)
 {
@@ -109,6 +124,9 @@ RC LogicalPlanGenerator::create_plan(SelectStmt *select_stmt, unique_ptr<Logical
   }
 
   const vector<Table *> &tables = select_stmt->tables();
+
+  // 建立 join 左深树，同时按顺序记录每个 join 算子，Jk 输出包含前 k+1 张表
+  vector<JoinLogicalOperator *> join_opers;
   for (Table *table : tables) {
 
     unique_ptr<LogicalOperator> table_get_oper(new TableGetLogicalOperator(table, ReadWriteMode::READ_ONLY));
@@ -119,16 +137,70 @@ RC LogicalPlanGenerator::create_plan(SelectStmt *select_stmt, unique_ptr<Logical
       join_oper->add_child(std::move(table_oper));
       join_oper->add_child(std::move(table_get_oper));
       table_oper = unique_ptr<LogicalOperator>(join_oper);
+      join_opers.push_back(join_oper);
     }
   }
 
-
+  // 将每个比较表达式下放到它引用的表全部出现的最早 join，无法下推的保留在最外层
+  vector<unique_ptr<Expression>> remaining_exprs;
   if (predicate_oper) {
+    vector<unique_ptr<Expression>> &pred_exprs = predicate_oper->expressions();
+    if (!pred_exprs.empty()) {
+      Expression &root = *pred_exprs.front();
+      if (root.type() == ExprType::CONJUNCTION) {
+        auto &and_expr = static_cast<ConjunctionExpr &>(root);
+        for (auto &cmp : and_expr.children()) {
+          unordered_set<string> referenced;
+          rc = collect_field_tables(*cmp, referenced);
+          if (rc != RC::SUCCESS) {
+            LOG_WARN("failed to collect field tables. rc=%s", strrc(rc));
+            return rc;
+          }
+
+          int  target     = -1;
+          bool all_exists = true;
+          for (const string &tname : referenced) {
+            int idx = -1;
+            for (size_t i = 0; i < tables.size(); i++) {
+              if (strcmp(tables[i]->name(), tname.c_str()) == 0) {
+                idx = static_cast<int>(i);
+                break;
+              }
+            }
+            if (idx == -1) {
+              all_exists = false;
+              break;
+            }
+            target = max(target, idx);
+          }
+
+          if (!all_exists || referenced.empty() || join_opers.empty()) {
+            // 表无法定位、纯常量条件（如 1=1）、或单表查询，保留在最外层
+            remaining_exprs.emplace_back(std::move(cmp));
+          } else {
+            int k = (target >= 1) ? (target - 1) : 0;
+            join_opers[k]->add_join_predicate(std::move(cmp));
+          }
+        }
+      } else {
+        // 防御：顶层不是 AND 连接时，整体保留在最外层
+        remaining_exprs.emplace_back(std::move(pred_exprs.front()));
+      }
+    }
+  }
+
+  unique_ptr<LogicalOperator> top_predicate;
+  if (!remaining_exprs.empty()) {
+    auto conjunction = make_unique<ConjunctionExpr>(ConjunctionExpr::Type::AND, remaining_exprs);
+    top_predicate.reset(new PredicateLogicalOperator(std::move(conjunction)));
+  }
+
+  if (top_predicate) {
     if (*last_oper) {
-      predicate_oper->add_child(std::move(*last_oper));
+      top_predicate->add_child(std::move(*last_oper));
     }
 
-    last_oper = &predicate_oper;
+    last_oper = &top_predicate;
   }
 
   unique_ptr<LogicalOperator> group_by_oper;

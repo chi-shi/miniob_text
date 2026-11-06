@@ -344,7 +344,20 @@ RC PhysicalPlanGenerator::create_plan(JoinLogicalOperator &join_oper, unique_ptr
   if (session->hash_join_on() && can_use_hash_join(join_oper)) {
     // your code here
   } else {
-    unique_ptr<PhysicalOperator> join_physical_oper(new NestedLoopJoinPhysicalOperator());
+    unique_ptr<NestedLoopJoinPhysicalOperator> join_physical_oper(new NestedLoopJoinPhysicalOperator());
+
+    // 将下推到该 join 的关联条件组合成一个表达式交给 NLJ，在算子内部逐行过滤
+    vector<unique_ptr<Expression>> &join_predicates = join_oper.get_join_predicates();
+    if (!join_predicates.empty()) {
+      unique_ptr<Expression> join_predicate;
+      if (join_predicates.size() == 1) {
+        join_predicate = std::move(join_predicates.front());
+      } else {
+        join_predicate = make_unique<ConjunctionExpr>(ConjunctionExpr::Type::AND, join_predicates);
+      }
+      join_physical_oper->set_predicate(std::move(join_predicate));
+    }
+
     for (auto &child_oper : child_opers) {
       unique_ptr<PhysicalOperator> child_physical_oper;
       rc = create(*child_oper, child_physical_oper, session);
