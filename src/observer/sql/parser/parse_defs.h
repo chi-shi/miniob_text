@@ -76,6 +76,17 @@ struct ConditionSqlNode
 };
 
 /**
+ * @brief 表示FROM子句中解析出的表与JOIN ON条件的中间结构
+ * @details 逗号分隔的隐式表与INNER JOIN ... ON显式连接，在解析阶段统一收集为
+ * 表名列表和ON条件列表，ON条件在select_stmt中与WHERE条件合并。
+ */
+struct JoinSqlNode
+{
+  vector<string>           relations;
+  vector<ConditionSqlNode> conditions;
+};
+
+/**
  * @brief 描述一个select语句
  * @ingroup SQLParser
  * @details 一个正常的select语句描述起来比这个要复杂很多，这里做了简化。
