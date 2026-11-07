@@ -423,12 +423,44 @@ bool RecordPageHandler::is_full() const { return page_header_->record_num >= pag
 
 RC PaxRecordPageHandler::insert_record(const char *data, RID *rid)
 {
-  // your code here
-  // Todo:
-  // 1.参考RowRecordPageHandler::insert_record完成大体实现
-  // 2.将一行数据拆分成不同的列插入到不同偏移中
-  // 对应列的偏移可以参照RecordPageHandler::init_empty_page
-  return RC::UNIMPLEMENTED;
+  ASSERT(rw_mode_ != ReadWriteMode::READ_ONLY,
+         "cannot insert record into page while the page is readonly");
+
+  if (page_header_->record_num == page_header_->record_capacity) {
+    LOG_WARN("Page is full, page_num %d:%d.", disk_buffer_pool_->file_desc(), frame_->page_num());
+    return RC::RECORD_NOMEM;
+  }
+
+  // 找到空闲位置
+  Bitmap bitmap(bitmap_, page_header_->record_capacity);
+  int    index = bitmap.next_unsetted_bit(0);
+  bitmap.set_bit(index);
+  page_header_->record_num++;
+
+  // 记录日志，与数据库恢复相关
+  RC rc = log_handler_.insert_record(frame_, RID(get_page_num(), index), data);
+  if (OB_FAIL(rc)) {
+    LOG_ERROR("Failed to insert record. page_num %d:%d. rc=%s", disk_buffer_pool_->file_desc(),
+              frame_->page_num(), strrc(rc));
+    // return rc; // ignore errors
+  }
+
+  // 将一行数据按列拆分，写入到 PAX 页面不同列的对应槽位
+  int row_offset = 0;
+  for (int col_id = 0; col_id < page_header_->column_num; ++col_id) {
+    int field_len = get_field_len(col_id);
+    memcpy(get_field_data(index, col_id), data + row_offset, field_len);
+    row_offset += field_len;
+  }
+
+  frame_->mark_dirty();
+
+  if (rid) {
+    rid->page_num = get_page_num();
+    rid->slot_num = index;
+  }
+
+  return RC::SUCCESS;
 }
 
 RC PaxRecordPageHandler::insert_chunk(const Chunk &chunk, int start_row, int &insert_rows)
@@ -463,22 +495,69 @@ RC PaxRecordPageHandler::delete_record(const RID *rid)
 
 RC PaxRecordPageHandler::get_record(const RID &rid, Record &record)
 {
-  // your code here
-  // Todo:
-  // 1.参考RowRecordPageHandler::get_record完成大体实现
-  // 2.通过列的偏移拼接出完整的行数据
-  // 可以参照PaxRecordPageHandler::insert_record的实现
-  return RC::UNIMPLEMENTED;
+  if (rid.slot_num >= page_header_->record_capacity) {
+    LOG_ERROR("Invalid slot_num %d, exceed page's record capacity, frame=%s, page_header=%s",
+              rid.slot_num, frame_->to_string().c_str(), page_header_->to_string().c_str());
+    return RC::RECORD_INVALID_RID;
+  }
+
+  Bitmap bitmap(bitmap_, page_header_->record_capacity);
+  if (!bitmap.get_bit(rid.slot_num)) {
+    LOG_DEBUG("Invalid slot_num:%d, slot is empty, page_num %d.", rid.slot_num, frame_->page_num());
+    return RC::RECORD_NOT_EXIST;
+  }
+
+  // 分配一段行存缓冲区，把各列数据按行内偏移拼接成完整的一行
+  RC rc = record.new_record(page_header_->record_real_size);
+  if (OB_FAIL(rc)) {
+    LOG_ERROR("Failed to allocate memory for record. rc=%s", strrc(rc));
+    return rc;
+  }
+
+  int row_offset = 0;
+  for (int col_id = 0; col_id < page_header_->column_num; ++col_id) {
+    int field_len = get_field_len(col_id);
+    memcpy(record.data() + row_offset, get_field_data(rid.slot_num, col_id), field_len);
+    row_offset += field_len;
+  }
+
+  record.set_rid(rid);
+  return RC::SUCCESS;
 }
 
 // TODO: specify the column_ids that chunk needed. currenly we get all columns
 RC PaxRecordPageHandler::get_chunk(Chunk &chunk)
 {
-  // your code here
-  // Todo:
-  // 参照PaxRecordPageHandler::get_record
-  // 一次性获得一个page的所有record
-  return RC::UNIMPLEMENTED;
+  Bitmap bitmap(bitmap_, page_header_->record_capacity);
+
+  // 先统计有效记录数，空页面直接返回 EOF 让扫描器跳过该页
+  int valid_num = 0;
+  for (int slot = 0; slot < page_header_->record_capacity; ++slot) {
+    if (bitmap.get_bit(slot)) {
+      valid_num++;
+    }
+  }
+  if (valid_num == 0) {
+    return RC::RECORD_EOF;
+  }
+
+  // 按 chunk 需要的列（col_id），从 PAX 对应列区域把有效记录紧凑地追加到列中
+  for (int chunk_col = 0; chunk_col < chunk.column_num(); ++chunk_col) {
+    int     col_id = chunk.column_ids(chunk_col);
+    Column &column = chunk.column(chunk_col);
+    for (int slot = 0; slot < page_header_->record_capacity; ++slot) {
+      if (!bitmap.get_bit(slot)) {
+        continue;
+      }
+      RC rc = column.append_one(get_field_data(slot, col_id));
+      if (OB_FAIL(rc)) {
+        LOG_ERROR("Failed to append one value to column. rc=%s", strrc(rc));
+        return rc;
+      }
+    }
+  }
+
+  return RC::SUCCESS;
 }
 
 char *PaxRecordPageHandler::get_field_data(SlotNum slot_num, int col_id)
