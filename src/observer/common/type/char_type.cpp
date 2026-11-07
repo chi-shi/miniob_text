@@ -63,6 +63,15 @@ RC CharType::cast_to(const Value &val, AttrType type, Value &result) const
       result.set_type(AttrType::DATES);
       return RC::SUCCESS;
     }
+    case AttrType::INTS: {
+      // 字符串转整数，取前导数字，无法解析时按 0 处理，与 MySQL 隐式转换一致
+      result.set_int(val.get_int());
+      return RC::SUCCESS;
+    }
+    case AttrType::FLOATS: {
+      result.set_float(val.get_float());
+      return RC::SUCCESS;
+    }
     default: return RC::UNIMPLEMENTED;
   }
   return RC::SUCCESS;
@@ -75,6 +84,9 @@ int CharType::cast_cost(AttrType type)
   }
   if (type == AttrType::DATES) {
     return 1;
+  }
+  if (type == AttrType::INTS || type == AttrType::FLOATS) {
+    return 2;
   }
   return INT32_MAX;
 }

@@ -68,6 +68,33 @@ RC FloatType::negative(const Value &val, Value &result) const
   return RC::SUCCESS;
 }
 
+RC FloatType::cast_to(const Value &val, AttrType type, Value &result) const
+{
+  if (type == AttrType::CHARS) {
+    // 浮点数转字符串
+    string str;
+    RC     rc = FloatType::to_string(val, str);
+    if (rc != RC::SUCCESS) {
+      return rc;
+    }
+    result.set_string(str.c_str());
+    return RC::SUCCESS;
+  }
+  LOG_WARN("unsupported type %d", type);
+  return RC::SCHEMA_FIELD_TYPE_MISMATCH;
+}
+
+int FloatType::cast_cost(AttrType type)
+{
+  if (type == AttrType::FLOATS) {
+    return 0;
+  }
+  if (type == AttrType::CHARS) {
+    return 3;
+  }
+  return INT32_MAX;
+}
+
 RC FloatType::set_value_from_str(Value &val, const string &data) const
 {
   RC                rc = RC::SUCCESS;

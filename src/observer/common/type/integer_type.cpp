@@ -45,6 +45,16 @@ RC IntegerType::cast_to(const Value &val, AttrType type, Value &result) const
     result.set_float(float_value);
     return RC::SUCCESS;
   }
+  case AttrType::CHARS: {
+    // 整数转字符串
+    string str;
+    RC     rc = IntegerType::to_string(val, str);
+    if (rc != RC::SUCCESS) {
+      return rc;
+    }
+    result.set_string(str.c_str());
+    return RC::SUCCESS;
+  }
   default:
     LOG_WARN("unsupported type %d", type);
     return RC::SCHEMA_FIELD_TYPE_MISMATCH;
