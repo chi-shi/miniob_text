@@ -586,6 +586,15 @@ aggregate_expression:
     ID LBRACE expression RBRACE {
       $$ = create_aggregate_expression($1, $3, sql_string, &@$);
     }
+    | ID LBRACE RBRACE {
+      $$ = create_aggregate_expression($1, nullptr, sql_string, &@$);
+    }
+    | ID LBRACE expression COMMA expression_list RBRACE {
+      auto *expr_list = $5;
+      expr_list->emplace(expr_list->begin(), $3);
+      delete expr_list;
+      $$ = create_aggregate_expression($1, nullptr, sql_string, &@$);
+    }
     ;
 
 rel_attr:

@@ -13,7 +13,41 @@ See the Mulan PSL v2 for more details. */
 #include "common/type/char_type.h"
 #include "common/value.h"
 
+#include <cctype>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
+
+// 严格字符串转数字：去首尾空白后，整个字符串必须能被完整解析为数字，否则报错。
+// 对齐 MySQL 严格模式（STRICT_TRANS_TABLES），非法值返回类型不匹配。
+static RC strict_str_to_double(const char *raw, double &out)
+{
+  if (raw == nullptr) {
+    return RC::SCHEMA_FIELD_TYPE_MISMATCH;
+  }
+  string s(raw);
+  size_t first = s.find_first_not_of(" \t\r\n");
+  if (first == string::npos) {
+    return RC::SCHEMA_FIELD_TYPE_MISMATCH;
+  }
+  size_t last = s.find_last_not_of(" \t\r\n");
+  s = s.substr(first, last - first + 1);
+
+  const char *cstr = s.c_str();
+  char       *end = nullptr;
+  double      d = strtod(cstr, &end);
+  if (end == cstr) {
+    return RC::SCHEMA_FIELD_TYPE_MISMATCH;
+  }
+  while (*end != '\0') {
+    if (isspace(static_cast<unsigned char>(*end)) == 0) {
+      return RC::SCHEMA_FIELD_TYPE_MISMATCH;
+    }
+    ++end;
+  }
+  out = d;
+  return RC::SUCCESS;
+}
 
 int CharType::compare(const Value &left, const Value &right) const
 {
@@ -64,12 +98,23 @@ RC CharType::cast_to(const Value &val, AttrType type, Value &result) const
       return RC::SUCCESS;
     }
     case AttrType::INTS: {
-      // 字符串转整数，取前导数字，无法解析时按 0 处理，与 MySQL 隐式转换一致
-      result.set_int(val.get_int());
+      // 严格转整数：完整解析为数字后四舍五入，非法字符串报错
+      double d = 0;
+      RC rc = strict_str_to_double(val.get_string().c_str(), d);
+      if (rc != RC::SUCCESS) {
+        return rc;
+      }
+      result.set_int(static_cast<int>(round(d)));
       return RC::SUCCESS;
     }
     case AttrType::FLOATS: {
-      result.set_float(val.get_float());
+      // 严格转浮点：完整解析，非法字符串报错
+      double d = 0;
+      RC rc = strict_str_to_double(val.get_string().c_str(), d);
+      if (rc != RC::SUCCESS) {
+        return rc;
+      }
+      result.set_float(static_cast<float>(d));
       return RC::SUCCESS;
     }
     default: return RC::UNIMPLEMENTED;
