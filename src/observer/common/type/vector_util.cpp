@@ -55,6 +55,9 @@ RC VectorHelper::parse_vector_string(const string &raw, vector<float> &output)
     if (comma == string::npos) {
       break;
     }
+    if (comma + 1 >= body.size()) {
+      return RC::INVALID_ARGUMENT;  // 末尾逗号，最后一个 token 为空
+    }
     pos = comma + 1;
   }
 

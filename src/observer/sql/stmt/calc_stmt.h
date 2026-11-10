@@ -16,6 +16,7 @@ See the Mulan PSL v2 for more details. */
 
 #include "common/sys/rc.h"
 #include "sql/expr/expression.h"
+#include "sql/parser/expression_binder.h"
 #include "sql/stmt/stmt.h"
 
 class Db;
@@ -34,10 +35,22 @@ public:
   StmtType type() const override { return StmtType::CALC; }
 
 public:
-  static RC create(CalcSqlNode &calc_sql, Stmt *&stmt)
+  static RC create(Db *db, CalcSqlNode &calc_sql, Stmt *&stmt)
   {
+    BinderContext binder_context;
+    ExpressionBinder expression_binder(binder_context);
+
+    vector<unique_ptr<Expression>> bound_expressions;
+    for (unique_ptr<Expression> &expression : calc_sql.expressions) {
+      RC rc = expression_binder.bind_expression(expression, bound_expressions);
+      if (OB_FAIL(rc)) {
+        LOG_WARN("failed to bind calc expression. rc=%s", strrc(rc));
+        return rc;
+      }
+    }
+
     CalcStmt *calc_stmt     = new CalcStmt();
-    calc_stmt->expressions_ = std::move(calc_sql.expressions);
+    calc_stmt->expressions_ = std::move(bound_expressions);
     stmt                    = calc_stmt;
     return RC::SUCCESS;
   }

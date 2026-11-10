@@ -216,6 +216,7 @@ static Value *create_function_value(const char *function_name, const char *raw_s
 %type <value>               value
 %type <value>               insert_value
 %type <number>              number
+%type <number>              vector_dim
 %type <cstring>             relation
 %type <comp>                comp_op
 %type <rel_attr>            rel_attr
@@ -428,13 +429,21 @@ attr_def:
       $$->name = $1;
       $$->length = 4;
     }
-    | ID VECTOR_T LBRACE number RBRACE
+    | ID VECTOR_T LBRACE vector_dim RBRACE
     {
       $$ = new AttrInfoSqlNode;
       $$->type = AttrType::VECTORS;
       $$->name = $1;
       $$->dim = $4;
-      $$->length = static_cast<size_t>($4) * sizeof(float);
+      $$->length = ($4 > 0) ? static_cast<size_t>($4) * sizeof(float) : 0;
+    }
+    | ID VECTOR_T LBRACE RBRACE
+    {
+      $$ = new AttrInfoSqlNode;
+      $$->type = AttrType::VECTORS;
+      $$->name = $1;
+      $$->dim = 0;
+      $$->length = 0;
     }
     | ID VECTOR_T
     {
@@ -444,6 +453,10 @@ attr_def:
       $$->dim = 2048;
       $$->length = static_cast<size_t>(2048) * sizeof(float);
     }
+    ;
+vector_dim:
+    NUMBER { $$ = $1; }
+    | '-' NUMBER { $$ = -$2; }
     ;
 number:
     NUMBER {$$ = $1;}

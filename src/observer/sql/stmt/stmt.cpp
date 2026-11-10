@@ -119,7 +119,7 @@ RC Stmt::create_stmt(Db *db, ParsedSqlNode &sql_node, Stmt *&stmt)
     }
 
     case SCF_CALC: {
-      return CalcStmt::create(sql_node.calc, stmt);
+      return CalcStmt::create(db, sql_node.calc, stmt);
     }
 
     default: {
