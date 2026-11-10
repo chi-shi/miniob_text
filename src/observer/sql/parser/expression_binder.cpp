@@ -62,6 +62,10 @@ RC ExpressionBinder::bind_expression(unique_ptr<Expression> &expr, vector<unique
       return bind_aggregate_expression(expr, bound_expressions);
     } break;
 
+    case ExprType::UNBOUND_FUNCTION: {
+      return bind_function_expression(expr, bound_expressions);
+    } break;
+
     case ExprType::FIELD: {
       return bind_field_expression(expr, bound_expressions);
     } break;
@@ -450,5 +454,43 @@ RC ExpressionBinder::bind_aggregate_expression(
   }
 
   bound_expressions.emplace_back(std::move(aggregate_expr));
+  return RC::SUCCESS;
+}
+
+RC ExpressionBinder::bind_function_expression(
+    unique_ptr<Expression> &expr, vector<unique_ptr<Expression>> &bound_expressions)
+{
+  if (nullptr == expr) {
+    return RC::SUCCESS;
+  }
+
+  auto unbound_function_expr = static_cast<UnboundFunctionExpr *>(expr.get());
+  const char *function_name = unbound_function_expr->function_name();
+
+  FunctionExpr::Type function_type;
+  RC rc = FunctionExpr::type_from_string(function_name, function_type);
+  if (OB_FAIL(rc)) {
+    LOG_WARN("invalid function name: %s", function_name);
+    return rc;
+  }
+
+  // 递归绑定每个参数
+  vector<unique_ptr<Expression>> bound_args;
+  for (auto &arg : unbound_function_expr->args()) {
+    vector<unique_ptr<Expression>> arg_bound;
+    rc = bind_expression(arg, arg_bound);
+    if (OB_FAIL(rc)) {
+      return rc;
+    }
+    if (arg_bound.size() != 1) {
+      LOG_WARN("invalid argument number for function: %s", function_name);
+      return RC::INVALID_ARGUMENT;
+    }
+    bound_args.emplace_back(std::move(arg_bound[0]));
+  }
+
+  auto function_expr = make_unique<FunctionExpr>(function_type, std::move(bound_args));
+  function_expr->set_name(unbound_function_expr->name());
+  bound_expressions.emplace_back(std::move(function_expr));
   return RC::SUCCESS;
 }

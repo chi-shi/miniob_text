@@ -247,6 +247,12 @@ RC LogicalPlanGenerator::create_plan(FilterStmt *filter_stmt, unique_ptr<Logical
                                      : static_cast<Expression *>(new ValueExpr(filter_obj_right.value)));
 
     if (left->value_type() != right->value_type()) {
+      if (left->value_type() == AttrType::VECTORS || right->value_type() == AttrType::VECTORS) {
+        LOG_WARN("vector cannot compare with other type: %s vs %s",
+            attr_type_to_string(left->value_type()), attr_type_to_string(right->value_type()));
+        rc = RC::UNSUPPORTED;
+        return rc;
+      }
       auto left_to_right_cost = implicit_cast_cost(left->value_type(), right->value_type());
       auto right_to_left_cost = implicit_cast_cost(right->value_type(), left->value_type());
       if (left_to_right_cost <= right_to_left_cost && left_to_right_cost != INT32_MAX) {
@@ -285,6 +291,12 @@ RC LogicalPlanGenerator::create_plan(FilterStmt *filter_stmt, unique_ptr<Logical
       }
     }
 
+    if (left->value_type() == AttrType::VECTORS &&
+        filter_unit->comp() != CompOp::EQUAL_TO && filter_unit->comp() != CompOp::NOT_EQUAL) {
+      LOG_WARN("vector only supports equal/not-equal comparison, comp=%d", filter_unit->comp());
+      rc = RC::UNSUPPORTED;
+      return rc;
+    }
     ComparisonExpr *cmp_expr = new ComparisonExpr(filter_unit->comp(), std::move(left), std::move(right));
     cmp_exprs.emplace_back(cmp_expr);
   }

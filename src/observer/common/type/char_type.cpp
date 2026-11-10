@@ -11,6 +11,7 @@ See the Mulan PSL v2 for more details. */
 #include "common/lang/comparator.h"
 #include "common/log/log.h"
 #include "common/type/char_type.h"
+#include "common/type/vector_util.h"
 #include "common/value.h"
 
 #include <cstdio>
@@ -72,6 +73,16 @@ RC CharType::cast_to(const Value &val, AttrType type, Value &result) const
       result.set_float(val.get_float());
       return RC::SUCCESS;
     }
+    case AttrType::VECTORS: {
+      // 解析 "[a,b,c]" 形式的字符串为向量
+      vector<float> values;
+      RC rc = VectorHelper::parse_vector_string(val.get_string(), values);
+      if (rc != RC::SUCCESS) {
+        return rc;
+      }
+      result.set_vector(values.data(), static_cast<int>(values.size()));
+      return RC::SUCCESS;
+    }
     default: return RC::UNIMPLEMENTED;
   }
   return RC::SUCCESS;
@@ -86,6 +97,9 @@ int CharType::cast_cost(AttrType type)
     return 1;
   }
   if (type == AttrType::INTS || type == AttrType::FLOATS) {
+    return 2;
+  }
+  if (type == AttrType::VECTORS) {
     return 2;
   }
   return INT32_MAX;

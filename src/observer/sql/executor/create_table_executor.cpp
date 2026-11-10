@@ -31,6 +31,14 @@ RC CreateTableExecutor::execute(SQLStageEvent *sql_event)
 
   CreateTableStmt *create_table_stmt = static_cast<CreateTableStmt *>(stmt);
 
+  // 校验向量维度：至少 1，最大 16383
+  for (const AttrInfoSqlNode &attr : create_table_stmt->attr_infos()) {
+    if (attr.type == AttrType::VECTORS && (attr.dim < 1 || attr.dim > 16383)) {
+      LOG_WARN("invalid vector dimension: %d", attr.dim);
+      return RC::INVALID_ARGUMENT;
+    }
+  }
+
   const char *table_name = create_table_stmt->table_name().c_str();
   RC rc = session->get_current_db()->create_table(table_name, create_table_stmt->attr_infos(), create_table_stmt->primary_keys(), create_table_stmt->storage_format());
 

@@ -157,6 +157,7 @@ struct AttrInfoSqlNode
   AttrType type;    ///< Type of attribute
   string   name;    ///< Attribute name
   size_t   length;  ///< Length of attribute
+  int      dim = 0;  ///< 向量维度，仅 VECTORS 类型使用
 };
 
 /**

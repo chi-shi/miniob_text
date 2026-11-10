@@ -39,6 +39,7 @@ enum class ExprType
   STAR,                 ///< 星号，表示所有字段
   UNBOUND_FIELD,        ///< 未绑定的字段，需要在resolver阶段解析为FieldExpr
   UNBOUND_AGGREGATION,  ///< 未绑定的聚合函数，需要在resolver阶段解析为AggregateExpr
+  UNBOUND_FUNCTION,     ///< 未绑定的普通函数，需要在resolver阶段解析为FunctionExpr
 
   FIELD,        ///< 字段。在实际执行时，根据行数据内容提取对应字段的值
   VALUE,        ///< 常量值
@@ -47,6 +48,7 @@ enum class ExprType
   CONJUNCTION,  ///< 多个表达式使用同一种关系(AND或OR)来联结
   ARITHMETIC,   ///< 算术运算
   AGGREGATION,  ///< 聚合运算
+  FUNCTION,     ///< 普通函数运算
 };
 
 /**
@@ -527,4 +529,71 @@ public:
 private:
   Type                   aggregate_type_;
   unique_ptr<Expression> child_;
+};
+
+/**
+ * @brief 未绑定的普通函数表达式，parser 产出，binder 阶段转换为 FunctionExpr
+ */
+class UnboundFunctionExpr : public Expression
+{
+public:
+  UnboundFunctionExpr(const char *function_name, vector<unique_ptr<Expression>> args);
+  virtual ~UnboundFunctionExpr() = default;
+
+  ExprType type() const override { return ExprType::UNBOUND_FUNCTION; }
+
+  unique_ptr<Expression> copy() const override;
+
+  const char                          *function_name() const { return function_name_.c_str(); }
+  vector<unique_ptr<Expression>>      &args() { return args_; }
+
+  RC get_value(const Tuple &tuple, Value &value) const override { return RC::INTERNAL; }
+  AttrType value_type() const override { return AttrType::UNDEFINED; }
+
+private:
+  string                            function_name_;
+  vector<unique_ptr<Expression>>    args_;
+};
+
+/**
+ * @brief 已绑定的普通函数表达式，执行时按函数名求值
+ */
+class FunctionExpr : public Expression
+{
+public:
+  enum class Type
+  {
+    STRING_TO_VECTOR,
+    VECTOR_TO_STRING,
+  };
+
+public:
+  FunctionExpr(Type type, vector<unique_ptr<Expression>> args);
+  virtual ~FunctionExpr() = default;
+
+  unique_ptr<Expression> copy() const override;
+
+  ExprType type() const override { return ExprType::FUNCTION; }
+
+  AttrType value_type() const override
+  {
+    return function_type_ == Type::STRING_TO_VECTOR ? AttrType::VECTORS : AttrType::CHARS;
+  }
+
+  RC get_value(const Tuple &tuple, Value &value) const override;
+  RC try_get_value(Value &value) const override;
+
+  Type function_type() const { return function_type_; }
+
+  vector<unique_ptr<Expression>> &args() { return args_; }
+  const vector<unique_ptr<Expression>> &args() const { return args_; }
+
+  static RC type_from_string(const char *type_str, Type &type);
+
+private:
+  RC evaluate(const vector<Value> &arguments, Value &result) const;
+
+private:
+  Type                            function_type_;
+  vector<unique_ptr<Expression>>  args_;
 };

@@ -228,6 +228,14 @@ RC Table::make_record(int value_num, const Value *values, Record &record)
   for (int i = 0; i < value_num && OB_SUCC(rc); i++) {
     const FieldMeta *field = table_meta_.field(i + normal_field_start_index);
     const Value &    value = values[i];
+    // 向量必须维度一致，不允许隐式补全或截断
+    if (field->type() == AttrType::VECTORS && value.attr_type() == AttrType::VECTORS
+        && value.length() != field->len() / static_cast<int>(sizeof(float))) {
+      LOG_WARN("vector dimension mismatch. field dim=%d, value dim=%d",
+          field->len() / static_cast<int>(sizeof(float)), value.length());
+      rc = RC::INVALID_ARGUMENT;
+      break;
+    }
     if (field->type() != value.attr_type()) {
       Value real_value;
       rc = Value::cast_to(value, field->type(), real_value);

@@ -15,6 +15,7 @@ See the Mulan PSL v2 for more details. */
 #include "sql/expr/expression.h"
 #include "sql/expr/tuple.h"
 #include "sql/expr/arithmetic_operator.hpp"
+#include "common/type/vector_util.h"
 
 using namespace std;
 
@@ -142,6 +143,20 @@ ComparisonExpr::~ComparisonExpr() {}
 RC ComparisonExpr::compare_value(const Value &left, const Value &right, bool &result) const
 {
   RC  rc         = RC::SUCCESS;
+
+  // 向量比较规则：只能与同为向量的值做相等/不等比较，其余一律报错
+  if (left.attr_type() == AttrType::VECTORS || right.attr_type() == AttrType::VECTORS) {
+    if (left.attr_type() != right.attr_type()) {
+      LOG_WARN("vector cannot compare with other type: %s vs %s",
+          attr_type_to_string(left.attr_type()), attr_type_to_string(right.attr_type()));
+      return RC::UNSUPPORTED;
+    }
+    if (comp_ != CompOp::EQUAL_TO && comp_ != CompOp::NOT_EQUAL) {
+      LOG_WARN("vector only supports equal/not-equal comparison, comp=%d", comp_);
+      return RC::UNSUPPORTED;
+    }
+  }
+
   int cmp_result = left.compare(right);
   result         = false;
   switch (comp_) {
@@ -643,4 +658,107 @@ RC AggregateExpr::type_from_string(const char *type_str, AggregateExpr::Type &ty
     rc = RC::INVALID_ARGUMENT;
   }
   return rc;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+UnboundFunctionExpr::UnboundFunctionExpr(const char *function_name, vector<unique_ptr<Expression>> args)
+    : function_name_(function_name), args_(std::move(args))
+{}
+
+unique_ptr<Expression> UnboundFunctionExpr::copy() const
+{
+  vector<unique_ptr<Expression>> copied_args;
+  copied_args.reserve(args_.size());
+  for (const auto &arg : args_) {
+    copied_args.emplace_back(arg->copy());
+  }
+  return make_unique<UnboundFunctionExpr>(function_name_.c_str(), std::move(copied_args));
+}
+
+FunctionExpr::FunctionExpr(Type type, vector<unique_ptr<Expression>> args)
+    : function_type_(type), args_(std::move(args))
+{}
+
+unique_ptr<Expression> FunctionExpr::copy() const
+{
+  vector<unique_ptr<Expression>> copied_args;
+  copied_args.reserve(args_.size());
+  for (const auto &arg : args_) {
+    copied_args.emplace_back(arg->copy());
+  }
+  return make_unique<FunctionExpr>(function_type_, std::move(copied_args));
+}
+
+RC FunctionExpr::type_from_string(const char *type_str, Type &type)
+{
+  if (0 == strcasecmp(type_str, "STRING_TO_VECTOR") || 0 == strcasecmp(type_str, "TO_VECTOR")) {
+    type = Type::STRING_TO_VECTOR;
+  } else if (0 == strcasecmp(type_str, "VECTOR_TO_STRING") || 0 == strcasecmp(type_str, "FROM_VECTOR")) {
+    type = Type::VECTOR_TO_STRING;
+  } else {
+    return RC::INVALID_ARGUMENT;
+  }
+  return RC::SUCCESS;
+}
+
+RC FunctionExpr::evaluate(const vector<Value> &arguments, Value &result) const
+{
+  if (arguments.size() != 1) {
+    return RC::INVALID_ARGUMENT;
+  }
+  const Value &arg = arguments[0];
+
+  switch (function_type_) {
+    case Type::STRING_TO_VECTOR: {
+      if (arg.attr_type() != AttrType::CHARS) {
+        return RC::INVALID_ARGUMENT;
+      }
+      vector<float> values;
+      RC rc = VectorHelper::parse_vector_string(arg.get_string(), values);
+      if (rc != RC::SUCCESS) {
+        return rc;
+      }
+      result.set_vector(values.data(), static_cast<int>(values.size()));
+      return RC::SUCCESS;
+    }
+    case Type::VECTOR_TO_STRING: {
+      if (arg.attr_type() != AttrType::VECTORS) {
+        return RC::INVALID_ARGUMENT;
+      }
+      string str = VectorHelper::to_vector_string(arg.get_vector(), arg.length());
+      result.set_string(str.c_str());
+      return RC::SUCCESS;
+    }
+  }
+  return RC::INTERNAL;
+}
+
+RC FunctionExpr::get_value(const Tuple &tuple, Value &value) const
+{
+  vector<Value> arguments;
+  arguments.reserve(args_.size());
+  for (const auto &arg : args_) {
+    Value arg_value;
+    RC rc = arg->get_value(tuple, arg_value);
+    if (rc != RC::SUCCESS) {
+      return rc;
+    }
+    arguments.emplace_back(std::move(arg_value));
+  }
+  return evaluate(arguments, value);
+}
+
+RC FunctionExpr::try_get_value(Value &value) const
+{
+  vector<Value> arguments;
+  arguments.reserve(args_.size());
+  for (const auto &arg : args_) {
+    Value arg_value;
+    RC rc = arg->try_get_value(arg_value);
+    if (rc != RC::SUCCESS) {
+      return rc;
+    }
+    arguments.emplace_back(std::move(arg_value));
+  }
+  return evaluate(arguments, value);
 }

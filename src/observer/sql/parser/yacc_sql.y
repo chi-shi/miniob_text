@@ -7,6 +7,7 @@
 
 #include "common/log/log.h"
 #include "common/lang/string.h"
+#include "common/type/vector_util.h"
 #include "sql/parser/parse_defs.h"
 #include "sql/parser/yacc_sql.hpp"
 #include "sql/parser/lex_sql.h"
@@ -48,6 +49,53 @@ UnboundAggregateExpr *create_aggregate_expression(const char *aggregate_name,
   UnboundAggregateExpr *expr = new UnboundAggregateExpr(aggregate_name, child);
   expr->set_name(token_name(sql_string, llocp));
   return expr;
+}
+
+// 判断是否为向量函数
+static bool is_vector_function(const char *name)
+{
+  return 0 == strcasecmp(name, "STRING_TO_VECTOR") || 0 == strcasecmp(name, "TO_VECTOR")
+      || 0 == strcasecmp(name, "VECTOR_TO_STRING") || 0 == strcasecmp(name, "FROM_VECTOR");
+}
+
+// 单参数函数：向量函数创建 UnboundFunctionExpr，其余按聚合处理
+static Expression *create_function_or_aggregate(const char *function_name,
+                                           Expression *child,
+                                           const char *sql_string,
+                                           YYLTYPE *llocp)
+{
+  if (is_vector_function(function_name)) {
+    vector<unique_ptr<Expression>> args;
+    args.emplace_back(child);
+    auto *expr = new UnboundFunctionExpr(function_name, std::move(args));
+    expr->set_name(token_name(sql_string, llocp));
+    return expr;
+  }
+  return create_aggregate_expression(function_name, child, sql_string, llocp);
+}
+
+// INSERT VALUES 里的向量函数：参数为字符串字面量，直接求值为 Value
+static Value *create_function_value(const char *function_name, const char *raw_string)
+{
+  if (0 == strcasecmp(function_name, "STRING_TO_VECTOR") || 0 == strcasecmp(function_name, "TO_VECTOR")) {
+    // raw_string 带首尾引号，先去掉
+    int len = static_cast<int>(strlen(raw_string));
+    string inner = string(raw_string + 1, len - 2);
+    vector<float> values;
+    if (VectorHelper::parse_vector_string(inner, values) != RC::SUCCESS) {
+      return nullptr;
+    }
+    auto *value = new Value();
+    value->set_vector(values.data(), static_cast<int>(values.size()));
+    return value;
+  }
+  if (0 == strcasecmp(function_name, "VECTOR_TO_STRING") || 0 == strcasecmp(function_name, "FROM_VECTOR")) {
+    // 插入场景下把向量转字符串，参数本身是字符串字面量时直接返回字符串
+    int len = static_cast<int>(strlen(raw_string));
+    string inner = string(raw_string + 1, len - 2);
+    return new Value(inner.c_str());
+  }
+  return nullptr;
 }
 
 %}
@@ -166,6 +214,7 @@ UnboundAggregateExpr *create_aggregate_expression(const char *aggregate_name,
 %type <number>              type
 %type <condition>           condition
 %type <value>               value
+%type <value>               insert_value
 %type <number>              number
 %type <cstring>             relation
 %type <comp>                comp_op
@@ -379,6 +428,22 @@ attr_def:
       $$->name = $1;
       $$->length = 4;
     }
+    | ID VECTOR_T LBRACE number RBRACE
+    {
+      $$ = new AttrInfoSqlNode;
+      $$->type = AttrType::VECTORS;
+      $$->name = $1;
+      $$->dim = $4;
+      $$->length = static_cast<size_t>($4) * sizeof(float);
+    }
+    | ID VECTOR_T
+    {
+      $$ = new AttrInfoSqlNode;
+      $$->type = AttrType::VECTORS;
+      $$->name = $1;
+      $$->dim = 2048;
+      $$->length = static_cast<size_t>(2048) * sizeof(float);
+    }
     ;
 number:
     NUMBER {$$ = $1;}
@@ -387,7 +452,6 @@ type:
     INT_T      { $$ = static_cast<int>(AttrType::INTS); }
     | STRING_T { $$ = static_cast<int>(AttrType::CHARS); }
     | FLOAT_T  { $$ = static_cast<int>(AttrType::FLOATS); }
-    | VECTOR_T { $$ = static_cast<int>(AttrType::VECTORS); }
     | DATE_T   { $$ = static_cast<int>(AttrType::DATES); }
     ;
 primary_key:
@@ -428,13 +492,13 @@ insert_stmt:        /*insert   语句的语法解析树*/
     ;
 
 value_list:
-    value
+    insert_value
     {
       $$ = new vector<Value>;
       $$->emplace_back(*$1);
       delete $1;
     }
-    | value_list COMMA value { 
+    | value_list COMMA insert_value { 
       $$ = $1;
       $$->emplace_back(*$3);
       delete $3;
@@ -453,6 +517,18 @@ value:
       char *tmp = common::substr($1,1,strlen($1)-2);
       $$ = new Value(tmp);
       free(tmp);
+    }
+    ;
+insert_value:
+    value {
+      $$ = $1;
+    }
+    |ID LBRACE SSS RBRACE {
+      Value *function_value = create_function_value($1, $3);
+      if (nullptr == function_value) {
+        YYERROR;
+      }
+      $$ = function_value;
     }
     ;
 storage_format:
@@ -584,7 +660,7 @@ expression:
 
 aggregate_expression:
     ID LBRACE expression RBRACE {
-      $$ = create_aggregate_expression($1, $3, sql_string, &@$);
+      $$ = create_function_or_aggregate($1, $3, sql_string, &@$);
     }
     | ID LBRACE RBRACE {
       $$ = create_aggregate_expression($1, nullptr, sql_string, &@$);
@@ -700,7 +776,7 @@ condition_list:
     }
     ;
 condition:
-    rel_attr comp_op value
+    rel_attr comp_op insert_value
     {
       $$ = new ConditionSqlNode;
       $$->left_is_attr = 1;
@@ -712,7 +788,7 @@ condition:
       delete $1;
       delete $3;
     }
-    | value comp_op value 
+    | insert_value comp_op insert_value
     {
       $$ = new ConditionSqlNode;
       $$->left_is_attr = 0;
@@ -736,7 +812,7 @@ condition:
       delete $1;
       delete $3;
     }
-    | value comp_op rel_attr
+    | insert_value comp_op rel_attr
     {
       $$ = new ConditionSqlNode;
       $$->left_is_attr = 0;

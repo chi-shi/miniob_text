@@ -43,6 +43,10 @@ Value::Value(const Value &other)
       set_string_from_other(other);
     } break;
 
+    case AttrType::VECTORS: {
+      set_vector(reinterpret_cast<const float *>(other.value_.pointer_value_), other.length_);
+    } break;
+
     default: {
       this->value_ = other.value_;
     } break;
@@ -71,6 +75,10 @@ Value &Value::operator=(const Value &other)
   switch (this->attr_type_) {
     case AttrType::CHARS: {
       set_string_from_other(other);
+    } break;
+
+    case AttrType::VECTORS: {
+      set_vector(reinterpret_cast<const float *>(other.value_.pointer_value_), other.length_);
     } break;
 
     default: {
@@ -104,6 +112,12 @@ void Value::reset()
         value_.pointer_value_ = nullptr;
       }
       break;
+    case AttrType::VECTORS:
+      if (own_data_ && value_.pointer_value_ != nullptr) {
+        delete[] reinterpret_cast<float *>(value_.pointer_value_);
+        value_.pointer_value_ = nullptr;
+      }
+      break;
     default: break;
   }
 
@@ -134,6 +148,10 @@ void Value::set_data(char *data, int length)
     case AttrType::BOOLEANS: {
       value_.bool_value_ = *(int *)data != 0;
       length_            = length;
+    } break;
+    case AttrType::VECTORS: {
+      int dim = length / static_cast<int>(sizeof(float));
+      set_vector(reinterpret_cast<const float *>(data), dim);
     } break;
     default: {
       LOG_WARN("unknown data type: %d", attr_type_);
@@ -217,6 +235,9 @@ void Value::set_value(const Value &value)
     case AttrType::BOOLEANS: {
       set_boolean(value.get_boolean());
     } break;
+    case AttrType::VECTORS: {
+      set_vector(value.get_vector(), value.length());
+    } break;
     default: {
       ASSERT(false, "got an invalid value type");
     } break;
@@ -233,10 +254,32 @@ void Value::set_string_from_other(const Value &other)
   }
 }
 
+void Value::set_vector(const float *data, int dim)
+{
+  reset();
+  attr_type_ = AttrType::VECTORS;
+  length_    = dim;
+  own_data_  = true;
+  float *buf = new float[dim > 0 ? dim : 1];
+  value_.pointer_value_ = reinterpret_cast<char *>(buf);
+  if (data != nullptr) {
+    memcpy(buf, data, sizeof(float) * dim);
+  }
+}
+
+const float *Value::get_vector() const
+{
+  ASSERT(attr_type_ == AttrType::VECTORS, "attr type is not VECTORS");
+  return reinterpret_cast<const float *>(value_.pointer_value_);
+}
+
 char *Value::data() const
 {
   switch (attr_type_) {
     case AttrType::CHARS: {
+      return value_.pointer_value_;
+    } break;
+    case AttrType::VECTORS: {
       return value_.pointer_value_;
     } break;
     default: {

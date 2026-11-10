@@ -37,12 +37,19 @@ RC PlainCommunicator::read_event(SessionEvent *&event)
   int data_len = 0;
   int read_len = 0;
 
-  const int    max_packet_size = 8192;
-  vector<char> buf(max_packet_size);
+  // 向量字符串可能很长（官方输出上限约 262128 字节），使用可增长的接收缓冲区
+  const int    max_packet_size = 512 * 1024;
+  const int    chunk_size      = 8192;
+  vector<char> buf(chunk_size);
 
   // 持续接收消息，直到遇到'\0'。将'\0'遇到的后续数据直接丢弃没有处理，因为目前仅支持一收一发的模式
   while (true) {
-    read_len = ::read(fd_, buf.data() + data_len, max_packet_size - data_len);
+    // 缓冲区不够时扩容，避免按固定容量读取造成越界
+    if (data_len + chunk_size > static_cast<int>(buf.size())) {
+      buf.resize(buf.size() + chunk_size);
+    }
+    int want = std::min(chunk_size, static_cast<int>(buf.size()) - data_len);
+    read_len = ::read(fd_, buf.data() + data_len, want);
     if (read_len < 0) {
       if (errno == EAGAIN) {
         continue;
